@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Downloads
+downloads/
+*.mp4
+*.ts
+*.m3u8
+
+# Cache / DB
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
