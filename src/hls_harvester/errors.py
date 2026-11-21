@@ -45,3 +45,35 @@ class UsageError(HarvesterError):
     """Invalid arguments or configuration (exit code 2)."""
 
     exit_code = ExitCode.USAGE
+
+
+class CaptureError(HarvesterError):
+    """Capture failed (exit code 4)."""
+
+    exit_code = ExitCode.CAPTURE_FAILED
+
+
+class UpstreamError(HarvesterError):
+    """Upstream request failed for good (exit code 5)."""
+
+    exit_code = ExitCode.UPSTREAM_ERROR
+
+
+class CredentialsExpired(UpstreamError):
+    """Upstream answered 401/403; credentials must be refreshed (SDD §3.5 item 4)."""
+
+    def __init__(self, message: str, *, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class UnsupportedContent(HarvesterError):
+    """DRM or an unsupported tag or encryption method (exit code 6)."""
+
+    exit_code = ExitCode.UNSUPPORTED
+
+
+class VerifyError(HarvesterError):
+    """FFmpeg failed or the output did not verify (exit code 7)."""
+
+    exit_code = ExitCode.VERIFY_FAILED
