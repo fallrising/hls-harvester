@@ -1,14 +1,15 @@
 """Command line interface (SDD §3.1) and exit-code handling (SDD §3.8).
 
-Subcommands: ``get``, ``login`` and ``doctor``. Only ``doctor`` is implemented in M0;
-``get`` and ``login`` validate their arguments and configuration, then exit with
-code 1 and "not implemented".
+Subcommands: ``get`` (capture a page and download, or ``--playlist`` to download a
+playlist URL directly), ``login`` and ``doctor``. ``get --play`` (the playback proxy,
+milestone M3) exits with code 1 and "not implemented".
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 from collections.abc import Sequence
@@ -17,11 +18,25 @@ from typing import TextIO
 from urllib.parse import urlsplit
 
 from hls_harvester import __version__, doctor
+from hls_harvester.adapters import adapter_for
+from hls_harvester.capturer import (
+    CaptureOptions,
+    Video,
+    capture,
+    launch_browser,
+    new_capture_context,
+)
 from hls_harvester.config import Settings, load_config, resolve_settings
 from hls_harvester.downloader import RestartChoice, download
 from hls_harvester.errors import ExitCode, HarvesterError, UsageError
+from hls_harvester.login import login
 from hls_harvester.redact import configure_logging, redact_text
-from hls_harvester.upstream import RetryPolicy, Upstream, open_playwright_transport
+from hls_harvester.upstream import (
+    PlaywrightTransport,
+    RetryPolicy,
+    Upstream,
+    open_playwright_transport,
+)
 
 log = logging.getLogger(__name__)
 
@@ -121,11 +136,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _not_implemented(command: str, stderr: TextIO) -> int:
-    print(f"hls-harvester {command}: not implemented", file=stderr)
-    return ExitCode.INTERNAL_ERROR
-
-
 def _confirm_restart(workdir: Path) -> RestartChoice:
     """Ask whether to resume an existing work directory (SDD §3.5 item 5)."""
     while True:
@@ -158,16 +168,36 @@ class _ProgressLine:
             self.stream.flush()
 
 
-async def _download(args: argparse.Namespace, settings: Settings, stderr: TextIO) -> Path:
-    policy = RetryPolicy(
+def _retry_policy(settings: Settings) -> RetryPolicy:
+    return RetryPolicy(
         max_retries=settings.max_retries,
         backoff_base_s=settings.retry_backoff_s,
         request_timeout_s=settings.request_timeout_s,
     )
-    interactive = not args.non_interactive and sys.stdin.isatty()
+
+
+def _choose_video(videos: Sequence[Video]) -> int | None:
+    """Let the user pick one of several captured videos (SDD §3.2 item 5)."""
+    print("Several videos were found on the page:", file=sys.stderr)
+    for index, video in enumerate(videos, start=1):
+        print(f"  [{index}] {video.describe()}", file=sys.stderr)
+    while True:
+        answer = input(f"Choose 1-{len(videos)} (empty to abort): ").strip()
+        if not answer:
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(videos):
+            return int(answer) - 1
+
+
+async def _download_playlist(
+    args: argparse.Namespace, settings: Settings, stderr: TextIO, interactive: bool
+) -> Path:
+    """``get --playlist``: download a playlist URL directly (no capture)."""
     async with open_playwright_transport(args.storage_state) as transport:
         upstream = Upstream(
-            transport, policy=policy, concurrency_per_host=settings.concurrency_per_host
+            transport,
+            policy=_retry_policy(settings),
+            concurrency_per_host=settings.concurrency_per_host,
         )
         return await download(
             args.page_url,
@@ -182,6 +212,67 @@ async def _download(args: argparse.Namespace, settings: Settings, stderr: TextIO
         )
 
 
+async def _capture_and_download(
+    args: argparse.Namespace, settings: Settings, stderr: TextIO, interactive: bool
+) -> Path:
+    """``get <page-url>``: capture the page in a browser, then download (SDD §4)."""
+    from playwright.async_api import async_playwright
+
+    adapter = adapter_for(urlsplit(args.page_url).hostname, play_selector=settings.play_selector)
+    options = CaptureOptions(timeout_s=settings.capture_timeout_s)
+    executable = str(settings.browser_executable) if settings.browser_executable else None
+    storage = str(args.storage_state) if args.storage_state else None
+    async with async_playwright() as playwright:
+        browser = await launch_browser(
+            playwright, headless=settings.headless, executable=executable
+        )
+        try:
+            context = await new_capture_context(browser, storage)
+            result = await capture(
+                context,
+                args.page_url,
+                options=options,
+                adapter=adapter,
+                chooser=_choose_video if interactive else None,
+            )
+            upstream = Upstream(
+                PlaywrightTransport(context.request),
+                policy=_retry_policy(settings),
+                concurrency_per_host=settings.concurrency_per_host,
+                templates=result.templates,
+            )
+
+            async def recapture() -> str:
+                # The user's choice applies to this job only: prefer the same video.
+                again = await capture(
+                    context,
+                    args.page_url,
+                    options=options,
+                    adapter=adapter,
+                    prefer=result.video.fingerprint(),
+                )
+                for template in again.templates:
+                    upstream.add_template(template)
+                return again.url
+
+            return await download(
+                result.url,
+                upstream=upstream,
+                output_dir=settings.output_dir,
+                output=args.output,
+                name=result.title,
+                quality=args.quality,
+                resume=args.resume,
+                reencode=args.reencode,
+                confirm_restart=_confirm_restart if interactive else None,
+                progress=_ProgressLine(stderr) if stderr.isatty() else None,
+                recapture=recapture,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await browser.close()
+
+
 def cmd_get(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
     config = load_config()
     settings = resolve_settings(
@@ -192,17 +283,12 @@ def cmd_get(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
     if args.mode == "play":
         print("hls-harvester get --play: not implemented (playback proxy, M3)", file=stderr)
         return ExitCode.INTERNAL_ERROR
-    if not args.playlist:
-        print(
-            "hls-harvester get: page capture is not implemented yet (M2); "
-            "pass --playlist with an HLS playlist URL",
-            file=stderr,
-        )
-        return ExitCode.INTERNAL_ERROR
     if args.storage_state is not None and not args.storage_state.is_file():
         raise UsageError(f"storage state file {args.storage_state} does not exist")
+    interactive = not args.non_interactive and sys.stdin.isatty()
+    run = _download_playlist if args.playlist else _capture_and_download
     try:
-        final = asyncio.run(_download(args, settings, stderr))
+        final = asyncio.run(run(args, settings, stderr, interactive))
     except KeyboardInterrupt:
         print("\ninterrupted; run again with --resume to continue", file=stderr)
         return ExitCode.INTERRUPTED
@@ -210,9 +296,21 @@ def cmd_get(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
     return ExitCode.OK
 
 
-def cmd_login(args: argparse.Namespace, stderr: TextIO) -> int:
-    load_config()
-    return _not_implemented("login", stderr)
+def cmd_login(args: argparse.Namespace, stdout: TextIO) -> int:
+    from playwright.async_api import async_playwright
+
+    settings = resolve_settings(load_config(), host=urlsplit(args.site_url).hostname)
+    executable = str(settings.browser_executable) if settings.browser_executable else None
+
+    async def run_login() -> Path:
+        async with async_playwright() as playwright:
+            return await login(
+                args.site_url, args.storage_state, playwright=playwright, executable=executable
+            )
+
+    path = asyncio.run(run_login())
+    print(path, file=stdout)
+    return ExitCode.OK
 
 
 def cmd_doctor(args: argparse.Namespace, stdout: TextIO) -> int:
@@ -238,7 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "get":
             return cmd_get(args, sys.stdout, sys.stderr)
         if args.command == "login":
-            return cmd_login(args, sys.stderr)
+            return cmd_login(args, sys.stdout)
         return cmd_doctor(args, sys.stdout)
     except HarvesterError as exc:
         print(f"hls-harvester: {redact_text(str(exc))}", file=sys.stderr)

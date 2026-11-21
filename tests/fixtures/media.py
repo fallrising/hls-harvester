@@ -10,6 +10,9 @@ Samples (name -> playlist path relative to the root):
     2-second VOD, fMP4 (``EXT-X-MAP`` init segment), muxed H.264 + AAC, 1 s segments.
 ``vod_long``
     30-second MPEG-TS VOD (160x90, 1 s segments, 30 segments) for retry/resume tests.
+``vod_600``
+    300-second MPEG-TS VOD with 600 half-second segments (64x36, 10 fps), for the
+    long-download / credential-expiry case.
 ``master``
     Master playlist with three video-only variants (160x90, 320x180, 640x360) and one
     separate audio rendition (``EXT-X-MEDIA TYPE=AUDIO``), all fMP4.
@@ -141,6 +144,54 @@ def _make_vod_long(root: Path) -> str:
         ]
     )
     return "vod_long/index.m3u8"
+
+
+LONG_600_SEGMENTS = 600
+
+
+def _make_vod_600(root: Path) -> str:
+    out = root / "vod_600"
+    out.mkdir()
+    duration = LONG_600_SEGMENTS // 2
+    _ffmpeg(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size=64x36:rate=10:duration={duration}",
+            *_lavfi_audio(440, 16000, duration),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "5",
+            "-keyint_min",
+            "5",
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "16k",
+            "-ac",
+            "1",
+            "-f",
+            "hls",
+            "-hls_time",
+            "0.5",
+            "-hls_playlist_type",
+            "vod",
+            "-hls_segment_type",
+            "mpegts",
+            "-hls_segment_filename",
+            str(out / "seg_%03d.ts"),
+            str(out / "index.m3u8"),
+        ]
+    )
+    return "vod_600/index.m3u8"
 
 
 def _dir_bits(path: Path) -> int:
@@ -304,6 +355,7 @@ def generate_samples(root: Path, work: Path) -> HlsSamples:
     playlists = {
         "vod_fmp4": _make_vod_fmp4(root),
         "vod_long": _make_vod_long(root),
+        "vod_600": _make_vod_600(root),
         "master": _make_master(root),
         "aes128": _make_aes128(root, work),
         "byterange": _make_byterange(root),

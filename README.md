@@ -1,6 +1,6 @@
 # hls-harvester
 
-> **狀態：M1 完成。** 可直接以清單 URL 下載（`get --playlist`）：分段並行下載、暫時性錯誤重試、續傳、不連續區段與 DRM 偵測，輸出經 ffprobe 驗證。頁面擷取（M2）與播放代理（M3）尚未實作。里程碑與「可正式使用」的條件見 [docs/SDD.md §8](docs/SDD.md#8-里程碑)，實作取捨見 [docs/decisions.md](docs/decisions.md)。
+> **狀態：M2 完成。** 可從頁面 URL 擷取並下載：獨立瀏覽器擷取（彈窗、跳轉、iframe、預載、多片選擇）、`login` 工作階段、憑證只送往適用的 host、過期時重新擷取。也可用 `--playlist` 直接下載清單。播放代理（M3）尚未實作。里程碑見 [docs/SDD.md §8](docs/SDD.md#8-里程碑)，實作取捨見 [docs/decisions.md](docs/decisions.md)。
 
 通用化 HLS / m3u8 串流擷取與本地乾淨播放／下載工具，供你有權存取與保存的影音使用。
 
@@ -23,15 +23,23 @@
 - 本地 HLS 代理供 VLC、IINA 或 hls.js 乾淨播放
 - 通用處理流程，以站點適配器處理差異
 
-## 目前用法（M1）
+## 目前用法（M2）
 
 ```sh
-# 直接給 HLS 清單 URL（master 或 media playlist），不經瀏覽器擷取
-hls-harvester get --playlist "https://example.com/path/master.m3u8" --quality 720p --output clip.mp4
-hls-harvester get --playlist "<同一 URL>" --output clip.mp4 --resume   # 中斷後續傳
+playwright install chromium            # 擷取需要 Chromium
+
+# 從影片頁面擷取並下載（預設檔名取自頁面標題）
+hls-harvester get "https://example.com/watch/123" --quality 720p
+
+# 需要登入的網站：先在獨立瀏覽器中自行登入，保存工作階段（檔案權限 0600）
+hls-harvester login "https://example.com" --storage-state ~/.config/hls-harvester/example.json
+hls-harvester get "https://example.com/watch/123" --storage-state ~/.config/hls-harvester/example.json
+
+# 已知清單 URL 時可略過擷取
+hls-harvester get --playlist "https://cdn.example.com/path/master.m3u8"
 ```
 
-結束碼見 [SDD §3.8](docs/SDD.md#38-設定日誌與結束碼)。
+中斷後加 `--resume` 續傳。結束碼見 [SDD §3.8](docs/SDD.md#38-設定日誌與結束碼)。
 
 ## Development
 
@@ -40,7 +48,7 @@ hls-harvester get --playlist "<同一 URL>" --output clip.mp4 --resume   # 中�
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 make install            # pip install -e ".[dev]"
-playwright install chromium   # 選用；M2 起的頁面擷取才需要（下載不需瀏覽器）
+playwright install chromium   # 頁面擷取與其測試需要
 hls-harvester doctor    # 檢查環境
 ```
 
@@ -51,4 +59,6 @@ make test        # pytest
 make check       # 以上全部
 ```
 
-測試 fixture（`tests/fixtures/`）：`media.py` 產生合成 HLS 樣本，`server.py` 是兩個 host（origin／CDN）的 aiohttp 伺服器，可依路由注入延遲、429、503、401／403、重新導向與斷線，並記錄每個請求的標頭。pytest fixture `hls_samples`、`fixture_server` 定義在 `tests/conftest.py`。
+無法執行 `playwright install chromium` 的環境，可用 `HLSH_TEST_CHROMIUM=/path/to/chrome make test` 指定 Chromium（設定檔對應選項為 `browser_executable`）。
+
+測試 fixture（`tests/fixtures/`）：`media.py` 產生合成 HLS 樣本，`server.py` 是兩個 host（origin／CDN）的 aiohttp 伺服器，可依路由注入延遲、429、503、401／403、重新導向與斷線，並記錄每個請求的標頭。`site.py` 是模擬播放器的測試頁（預載、彈窗、iframe、多片、blob、登入、憑證轉送、600 分段長片）。pytest fixture `hls_samples`、`fixture_server`、`site`、`browser` 定義在 `tests/conftest.py`。

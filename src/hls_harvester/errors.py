@@ -49,6 +49,12 @@ class UsageError(HarvesterError):
     exit_code = ExitCode.USAGE
 
 
+class AmbiguousSelection(HarvesterError):
+    """Several videos qualify and no choice could be made (exit code 3)."""
+
+    exit_code = ExitCode.AMBIGUOUS
+
+
 class CaptureError(HarvesterError):
     """Capture failed (exit code 4)."""
 

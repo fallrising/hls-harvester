@@ -102,3 +102,45 @@ implementation took. Newest last. Each entry names the SDD section it interprets
 28. **Headers for hosts without a template** (§3.3). `User-Agent` is the honest
     `hls-harvester/<version>` (no browser impersonation); `Referer` follows the browser
     default `strict-origin-when-cross-origin` from the referring playlist.
+
+## M2
+
+29. **Fixture hostnames, revised** (§7 "憑證轉送"; supersedes the cookie note in 12). Playwright's
+    `APIRequestContext` resolves names in Node, which cannot resolve `*.test` or
+    `*.localhost` here, and the downloader must reach the same hosts as the browser. The
+    fixture origin is therefore `127.0.0.1` and the CDN `localhost` (also bound on `::1`):
+    two different cookie hosts that both Chromium and Node resolve without resolver tricks.
+30. **When capture stops** (§3.2 items 2–3). After loading, the capturer waits briefly for
+    preloads, then clicks play (unless no play target exists). It finishes once there is a
+    candidate, a click has happened (or nothing is clickable) and no playlist or segment
+    response arrived for `settle_s` (1.5 s). Without a candidate it re-clicks every
+    `click_retry_s` (3 s), at most 3 clicks, within the 45 s deadline.
+31. **Candidate bodies** (§3.2 item 4). Bodies are read for `.m3u8`/`.m3u` URLs, HLS MIME types,
+    and XHR/fetch responses that are text, `application/octet-stream` or untyped (not HTML)
+    and at most 4 MiB. Only a body starting with `#EXTM3U` that parses counts.
+32. **Association with the play action** (§3.2 item 5). A video counts as started by the
+    player when any of its playlist, init or segment URLs was requested after the first play
+    click. That covers a playlist preloaded before the click whose segments load after it.
+    Without a play target, every video counts as associated.
+33. **"Playlist not observable"** (§3.2 item 4) is reported when no playlist candidate exists
+    but segment-like responses (by MIME type or extension) or `blob:` responses were seen.
+34. **Header templates** (§3.2 item 6). Kept headers: `User-Agent`, `Origin`, `Referer`,
+    `Accept`, `Accept-Language`. Auth headers are those `redact.is_sensitive_header` flags,
+    except `Cookie`. Each redirect hop is its own observed request, so auth headers stay
+    with the origin they were sent to. The first request to an origin defines its template.
+35. **Re-capture** (§3.5 item 4). When re-requesting the media playlist fails with 401/403, the
+    page is captured again in the same browser context, non-interactively, preferring a
+    video with the same fingerprint (quality labels of a master, or segment count and
+    duration of a media playlist), so an earlier manual choice is not asked again within the
+    job. All tracks are realigned. Re-captures count toward the 3-refresh limit.
+36. **`login`** (§3.1) lives in `login.py`. It finishes when the user presses Enter in the
+    terminal or closes the window; the session is snapshotted every second, so closing the
+    browser still saves it. The file is written atomically with mode 0600, also when it
+    replaces an existing file.
+37. **Login hint** (§3.7). When capture finds nothing and the page has a password field, the
+    error (exit 4) says to run `hls-harvester login` and pass `--storage-state`.
+38. **`browser_executable` setting.** Optional path of a Chromium binary, for machines where
+    `playwright install chromium` is not possible. Tests read `HLSH_TEST_CHROMIUM` for the same
+    purpose. It changes which Chromium runs, not how it presents itself.
+39. **Ambiguity listing** (§3.2 items 5, 8). Candidates are listed by short ID (`v1`, `v2`),
+    quality labels, segment count, duration and origin; never by full URL.

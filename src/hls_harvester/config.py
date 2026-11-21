@@ -50,6 +50,8 @@ class Settings:
     """Retries of a transient upstream error (SDD §3.5 item 3)."""
     retry_backoff_s: float = 0.5
     """Base delay of the exponential retry backoff."""
+    browser_executable: Path | None = None
+    """Chromium binary to use instead of the one ``playwright install`` provides."""
 
 
 @dataclass(frozen=True)
@@ -89,9 +91,9 @@ def _check_value(key: str, value: Any, where: str) -> Any:
     if key not in _FIELDS:
         known = ", ".join(sorted(_FIELDS))
         raise ConfigError(f"{where}: unknown setting {key!r} (known: {known})")
-    if key == "output_dir":
+    if key in {"output_dir", "browser_executable"}:
         if not isinstance(value, str) or not value:
-            raise ConfigError(f"{where}: output_dir must be a non-empty string")
+            raise ConfigError(f"{where}: {key} must be a non-empty string")
         return Path(value).expanduser()
     if key == "headless":
         if not isinstance(value, bool):
