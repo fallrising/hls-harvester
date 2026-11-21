@@ -8,6 +8,8 @@ Samples (name -> playlist path relative to the root):
 
 ``vod_fmp4``
     2-second VOD, fMP4 (``EXT-X-MAP`` init segment), muxed H.264 + AAC, 1 s segments.
+``vod_long``
+    30-second MPEG-TS VOD (160x90, 1 s segments, 30 segments) for retry/resume tests.
 ``master``
     Master playlist with three video-only variants (160x90, 320x180, 640x360) and one
     separate audio rendition (``EXT-X-MEDIA TYPE=AUDIO``), all fMP4.
@@ -121,6 +123,24 @@ def _make_vod_fmp4(root: Path) -> str:
         ]
     )
     return "vod_fmp4/index.m3u8"
+
+
+LONG_DURATION_S = 30
+
+
+def _make_vod_long(root: Path) -> str:
+    out = root / "vod_long"
+    out.mkdir()
+    _ffmpeg(
+        [
+            *_lavfi_video("testsrc", "160x90", LONG_DURATION_S),
+            *_lavfi_audio(440, 48000, LONG_DURATION_S),
+            *_X264,
+            *_AAC,
+            *_hls(out, fmp4=False),
+        ]
+    )
+    return "vod_long/index.m3u8"
 
 
 def _dir_bits(path: Path) -> int:
@@ -283,6 +303,7 @@ def generate_samples(root: Path, work: Path) -> HlsSamples:
     same = ("testsrc", "640x360", 440, 48000)
     playlists = {
         "vod_fmp4": _make_vod_fmp4(root),
+        "vod_long": _make_vod_long(root),
         "master": _make_master(root),
         "aes128": _make_aes128(root, work),
         "byterange": _make_byterange(root),
