@@ -19,6 +19,16 @@ def browser_executable() -> str | None:
     return os.environ.get(BROWSER_ENV) or None
 
 
+def _default_browsers_path() -> Path:
+    """Playwright's default browser cache for the real user (before HOME is replaced)."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform.startswith("win"):
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ms-playwright"
+    cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(cache) / "ms-playwright"
+
+
 def cli_env(home: Path, config: str = "") -> dict[str, str]:
     """Environment with an isolated config file (XDG on Linux, ~/Library on macOS)."""
     executable = browser_executable()
@@ -29,6 +39,8 @@ def cli_env(home: Path, config: str = "") -> dict[str, str]:
             "[defaults]\n", f'[defaults]\nbrowser_executable = "{executable}"\n', 1
         )
     env = dict(os.environ)
+    # Playwright finds its browsers under $HOME unless told otherwise; keep the real ones.
+    env.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_default_browsers_path()))
     env["HOME"] = str(home)
     env["XDG_CONFIG_HOME"] = str(home / ".config")
     for base in (home / ".config", home / "Library" / "Application Support"):
