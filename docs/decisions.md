@@ -144,3 +144,36 @@ implementation took. Newest last. Each entry names the SDD section it interprets
     purpose. It changes which Chromium runs, not how it presents itself.
 39. **Ambiguity listing** (§3.2 items 5, 8). Candidates are listed by short ID (`v1`, `v2`),
     quality labels, segment count, duration and origin; never by full URL.
+
+## M3
+
+40. **Local paths** (§3.6). Resources are `/<32 hex chars>/r<n><suffix>`: a 128-bit
+    `secrets.token_hex` prefix, a per-proxy counter, and the upstream extension when it is a
+    known media type (`.m3u8` for playlists). Rewritten playlists use root-relative paths, so
+    they work whether the player connected as `127.0.0.1` or `localhost`.
+41. **Origin handling** (§3.6). A request with an `Origin` header that is not in the new
+    `player_origins` setting (default: none) is refused with 403 and gets no CORS headers. An
+    allowed origin gets its own value back. VLC, IINA and FFmpeg send no `Origin`, so they
+    are unaffected.
+42. **Byte ranges and remapping** (§3.4, §3.6). Each child resource is keyed by where it
+    first appears in its playlist (variant index, media sequence number, n-th `EXT-X-MAP` or
+    `EXT-X-KEY`). A URI that repeats (byte ranges of one file) keeps one local path, so
+    implicit `EXT-X-BYTERANGE` offsets still work. When credentials are refreshed, the new
+    upstream URL replaces the old one at the same key, so local paths never change.
+43. **Live refresh** (§3.6). The proxy re-fetches a playlist without `EXT-X-ENDLIST` when a
+    player asks for it and the cached copy is older than half the target duration (at least
+    0.5 s). There is no background polling. Masters and finished media playlists are fetched
+    once. Segments that fell far out of the live window are forgotten (404).
+44. **Credential refresh in the proxy** (§3.6, §3.5 item 4). A 401/403 on a segment re-fetches
+    its playlist. A 401/403 on a playlist captures the page again (`recapture`, at most 3
+    times); with `--playlist` there is no page, so the player gets 502.
+45. **`--quality` with `--play`** (§3.4). Only the root master is filtered: it keeps the
+    chosen variant and the `EXT-X-MEDIA` renditions of its groups, and drops I-frame and
+    image streams. `--output`, `--resume` and `--reencode` are download options and exit 2
+    with `--play`.
+46. **Dropped tag.** `EXT-X-CONTENT-STEERING` is removed from rewritten playlists, because
+    it would send the player to a steering server outside the proxy.
+47. **Exit status of play mode** (§3.8 "播放正常結束"). Stopping after the idle timeout and
+    Ctrl-C both exit 0. Before any URL is printed, errors use the normal codes, for example
+    6 for DRM. Upstream errors while a player is connected are answered with 502 and logged.
+48. **New setting** `play_idle_timeout_s` (default 600, §3.6).

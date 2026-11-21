@@ -99,9 +99,9 @@ def test_usage_errors_exit_2(argv: list[str]) -> None:
     assert info.value.code == ExitCode.USAGE
 
 
-def test_play_is_not_implemented(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["get", "https://example.com/v", "--play"]) == ExitCode.INTERNAL_ERROR
-    assert "not implemented" in capsys.readouterr().err
+def test_play_rejects_download_options() -> None:
+    argv = ["get", "https://example.com/v", "--play", "--output", "x.mp4"]
+    assert cli.main(argv) == ExitCode.USAGE
 
 
 def test_missing_storage_state_is_usage_error(tmp_path: Path) -> None:
