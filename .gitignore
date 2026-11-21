@@ -24,3 +24,11 @@ downloads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tooling
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
