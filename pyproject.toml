@@ -43,6 +43,10 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PT", "ASYNC"]
 
+[tool.ruff.lint.per-file-ignores]
+# Tests inspect small local files from async test functions; blocking there is fine.
+"tests/**" = ["ASYNC240"]
+
 [tool.mypy]
 strict = true
 python_version = "3.11"

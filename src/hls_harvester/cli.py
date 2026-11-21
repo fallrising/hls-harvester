@@ -8,6 +8,7 @@ code 1 and "not implemented".
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 from collections.abc import Sequence
@@ -16,9 +17,11 @@ from typing import TextIO
 from urllib.parse import urlsplit
 
 from hls_harvester import __version__, doctor
-from hls_harvester.config import load_config, resolve_settings
-from hls_harvester.errors import ExitCode, HarvesterError
+from hls_harvester.config import Settings, load_config, resolve_settings
+from hls_harvester.downloader import RestartChoice, download
+from hls_harvester.errors import ExitCode, HarvesterError, UsageError
 from hls_harvester.redact import configure_logging, redact_text
+from hls_harvester.upstream import RetryPolicy, Upstream, open_playwright_transport
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         "get", parents=common, help="capture a page's stream and download (default) or play it"
     )
     get.add_argument("page_url", type=_http_url, metavar="PAGE_URL", help="URL of the video page")
+    get.add_argument(
+        "--playlist",
+        action="store_true",
+        help="PAGE_URL is an HLS playlist URL: skip the browser capture",
+    )
     mode = get.add_mutually_exclusive_group()
     mode.add_argument(
         "--download",
@@ -118,14 +126,88 @@ def _not_implemented(command: str, stderr: TextIO) -> int:
     return ExitCode.INTERNAL_ERROR
 
 
-def cmd_get(args: argparse.Namespace, stderr: TextIO) -> int:
+def _confirm_restart(workdir: Path) -> RestartChoice:
+    """Ask whether to resume an existing work directory (SDD §3.5 item 5)."""
+    while True:
+        answer = input(
+            f"An unfinished download exists in {workdir}.\n[r]esume, [s]tart over or [a]bort? "
+        )
+        choice = answer.strip().lower()[:1]
+        if choice == "r":
+            return "resume"
+        if choice == "s":
+            return "restart"
+        if choice in {"a", ""}:
+            return "abort"
+
+
+class _ProgressLine:
+    """A single updating progress line on an interactive stderr."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self.stream = stream
+        self.last = -1
+
+    def __call__(self, done: int, total: int) -> None:
+        percent = done * 100 // max(total, 1)
+        if percent != self.last:
+            self.last = percent
+            self.stream.write(f"\rdownloading: {done}/{total} ({percent}%)")
+            if done >= total:
+                self.stream.write("\n")
+            self.stream.flush()
+
+
+async def _download(args: argparse.Namespace, settings: Settings, stderr: TextIO) -> Path:
+    policy = RetryPolicy(
+        max_retries=settings.max_retries,
+        backoff_base_s=settings.retry_backoff_s,
+        request_timeout_s=settings.request_timeout_s,
+    )
+    interactive = not args.non_interactive and sys.stdin.isatty()
+    async with open_playwright_transport(args.storage_state) as transport:
+        upstream = Upstream(
+            transport, policy=policy, concurrency_per_host=settings.concurrency_per_host
+        )
+        return await download(
+            args.page_url,
+            upstream=upstream,
+            output_dir=settings.output_dir,
+            output=args.output,
+            quality=args.quality,
+            resume=args.resume,
+            reencode=args.reencode,
+            confirm_restart=_confirm_restart if interactive else None,
+            progress=_ProgressLine(stderr) if stderr.isatty() else None,
+        )
+
+
+def cmd_get(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
     config = load_config()
-    resolve_settings(
+    settings = resolve_settings(
         config,
         host=urlsplit(args.page_url).hostname,
         overrides={"headless": False if args.headed else None},
     )
-    return _not_implemented("get", stderr)
+    if args.mode == "play":
+        print("hls-harvester get --play: not implemented (playback proxy, M3)", file=stderr)
+        return ExitCode.INTERNAL_ERROR
+    if not args.playlist:
+        print(
+            "hls-harvester get: page capture is not implemented yet (M2); "
+            "pass --playlist with an HLS playlist URL",
+            file=stderr,
+        )
+        return ExitCode.INTERNAL_ERROR
+    if args.storage_state is not None and not args.storage_state.is_file():
+        raise UsageError(f"storage state file {args.storage_state} does not exist")
+    try:
+        final = asyncio.run(_download(args, settings, stderr))
+    except KeyboardInterrupt:
+        print("\ninterrupted; run again with --resume to continue", file=stderr)
+        return ExitCode.INTERRUPTED
+    print(final, file=stdout)
+    return ExitCode.OK
 
 
 def cmd_login(args: argparse.Namespace, stderr: TextIO) -> int:
@@ -154,7 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(args.verbose, json_format=args.log_json)
     try:
         if args.command == "get":
-            return cmd_get(args, sys.stderr)
+            return cmd_get(args, sys.stdout, sys.stderr)
         if args.command == "login":
             return cmd_login(args, sys.stderr)
         return cmd_doctor(args, sys.stdout)

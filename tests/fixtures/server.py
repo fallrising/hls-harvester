@@ -117,6 +117,8 @@ class Rule:
     action: Action
     host: str | None = None
     methods: frozenset[str] = frozenset({"GET", "HEAD"})
+    query: str | None = None
+    """Glob matched against the raw query string (e.g. ``"t=1*"``); None matches any."""
     after_requests: int = 0
     after_seconds: float | None = None
     times: int | None = None
@@ -125,11 +127,12 @@ class Rule:
     fired: int = field(default=0, init=False)
     created: float = field(default_factory=time.monotonic, init=False)
 
-    def matches(self, host: str, method: str, path: str) -> bool:
+    def matches(self, host: str, method: str, path: str, query: str = "") -> bool:
         return (
             (self.host is None or self.host == host)
             and method in self.methods
             and fnmatch.fnmatchcase(path, self.path)
+            and (self.query is None or fnmatch.fnmatchcase(query, self.query))
         )
 
     def should_fire(self, rng: random.Random) -> bool:
@@ -248,7 +251,11 @@ class FixtureServer:
             app = web.Application()
             app[HOST_NAME_KEY] = name
             app.router.add_route("*", "/{tail:.*}", self._handle)
-            runner = web.AppRunner(app, access_log=None, handle_signals=False)
+            # Cancel handlers whose client disconnected (e.g. timed out during a Delay), so
+            # in-flight accounting reflects open connections only.
+            runner = web.AppRunner(
+                app, access_log=None, handle_signals=False, handler_cancellation=True
+            )
             await runner.setup()
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
@@ -363,7 +370,7 @@ class FixtureServer:
         self, request: web.Request, host: str, record: RecordedRequest
     ) -> web.StreamResponse:
         for rule in self.rules:
-            if not rule.matches(host, request.method, request.path):
+            if not rule.matches(host, request.method, request.path, request.query_string):
                 continue
             if not rule.should_fire(self._rng):
                 continue

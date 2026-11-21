@@ -31,6 +31,7 @@ def test_exit_codes_match_sdd() -> None:
         "UPSTREAM_ERROR": 5,
         "UNSUPPORTED": 6,
         "VERIFY_FAILED": 7,
+        "INTERRUPTED": 130,
     }
 
 

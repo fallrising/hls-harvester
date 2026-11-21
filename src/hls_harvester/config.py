@@ -44,6 +44,12 @@ class Settings:
     """Site-specific selector of the play button (SDD §3.2 item 3, §3.7)."""
     cache_ttl_s: float = 600.0
     """Capture cache lifetime; used only by the v2 resident service (SDD §3.3)."""
+    request_timeout_s: float = 30.0
+    """Per-attempt upstream request timeout (SDD §3.5 item 3)."""
+    max_retries: int = 5
+    """Retries of a transient upstream error (SDD §3.5 item 3)."""
+    retry_backoff_s: float = 0.5
+    """Base delay of the exponential retry backoff."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,7 @@ class ConfigFile:
 
 
 _FIELDS = {f.name: f for f in dataclasses.fields(Settings)}
+_INT_MINIMUMS = {"concurrency_per_host": 1, "max_retries": 0}
 
 
 def default_config_path(
@@ -94,9 +101,10 @@ def _check_value(key: str, value: Any, where: str) -> Any:
         if not isinstance(value, str) or not value:
             raise ConfigError(f"{where}: play_selector must be a non-empty string")
         return value
-    if key == "concurrency_per_host":
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ConfigError(f"{where}: concurrency_per_host must be an integer >= 1")
+    if key in _INT_MINIMUMS:
+        minimum = _INT_MINIMUMS[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ConfigError(f"{where}: {key} must be an integer >= {minimum}")
         return value
     # Remaining fields are positive durations in seconds.
     if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
