@@ -184,7 +184,8 @@ class Upstream:
         if template is not None:
             headers = {k: v for k, v in template.headers.items() if k.lower() != "cookie"}
             headers.update(template.auth_headers)
-            headers.setdefault("User-Agent", self.user_agent)
+            if not any(k.lower() == "user-agent" for k in headers):
+                headers["User-Agent"] = self.user_agent
             return headers
         headers = {"User-Agent": self.user_agent}
         referer = default_referer(url, referrer)
