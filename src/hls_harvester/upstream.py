@@ -199,10 +199,13 @@ class Upstream:
         *,
         referrer: str | None = None,
         byterange: ByteRange | None = None,
+        range_header: str | None = None,
     ) -> Response:
         """GET ``url``, following redirects, retrying transient errors.
 
         With ``byterange`` a ``Range`` header is sent; a 200 reply is sliced locally.
+        ``range_header`` forwards a client's ``Range`` header as is (the playback proxy);
+        the reply is returned unchanged, including 206 and 416.
         Raises :class:`CredentialsExpired` on 401/403 and
         :class:`~hls_harvester.errors.UpstreamError` on other failures.
         """
@@ -211,6 +214,8 @@ class Upstream:
             headers = self.headers_for(current, referrer)
             if byterange is not None:
                 headers["Range"] = byterange.header()
+            elif range_header is not None:
+                headers["Range"] = range_header
             raw = await self._fetch_with_retries(current, headers)
             if raw.status in _REDIRECT_STATUSES:
                 location = raw.headers.get("location")
@@ -222,6 +227,8 @@ class Upstream:
                 raise CredentialsExpired(
                     f"{redact_url(current)}: HTTP {raw.status}", status=raw.status
                 )
+            if raw.status == 416 and range_header is not None:
+                return Response(url=current, status=416, headers=raw.headers, body=b"")
             if not 200 <= raw.status < 300:
                 raise UpstreamError(f"{redact_url(current)}: HTTP {raw.status}")
             body = raw.body

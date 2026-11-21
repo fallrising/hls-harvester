@@ -1,8 +1,8 @@
 """Command line interface (SDD §3.1) and exit-code handling (SDD §3.8).
 
 Subcommands: ``get`` (capture a page and download, or ``--playlist`` to download a
-playlist URL directly), ``login`` and ``doctor``. ``get --play`` (the playback proxy,
-milestone M3) exits with code 1 and "not implemented".
+playlist URL directly; ``--play`` serves it through the local playback proxy instead of
+downloading), ``login`` and ``doctor``.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ import asyncio
 import contextlib
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 from urllib.parse import urlsplit
@@ -30,6 +31,7 @@ from hls_harvester.config import Settings, load_config, resolve_settings
 from hls_harvester.downloader import RestartChoice, download
 from hls_harvester.errors import ExitCode, HarvesterError, UsageError
 from hls_harvester.login import login
+from hls_harvester.proxy import PlaybackProxy
 from hls_harvester.redact import configure_logging, redact_text
 from hls_harvester.upstream import (
     PlaywrightTransport,
@@ -189,33 +191,37 @@ def _choose_video(videos: Sequence[Video]) -> int | None:
             return int(answer) - 1
 
 
-async def _download_playlist(
-    args: argparse.Namespace, settings: Settings, stderr: TextIO, interactive: bool
-) -> Path:
-    """``get --playlist``: download a playlist URL directly (no capture)."""
+@dataclass
+class _Session:
+    """What ``get`` works on: an upstream core, the top-level playlist and, after a page
+    capture, a way to capture the page again for fresh credentials."""
+
+    upstream: Upstream
+    url: str
+    title: str | None = None
+    recapture: Callable[[], Awaitable[str]] | None = None
+
+
+@contextlib.asynccontextmanager
+async def _playlist_session(
+    args: argparse.Namespace, settings: Settings, interactive: bool
+) -> AsyncIterator[_Session]:
+    """``get --playlist``: use the URL directly, no browser capture."""
+    del interactive
     async with open_playwright_transport(args.storage_state) as transport:
         upstream = Upstream(
             transport,
             policy=_retry_policy(settings),
             concurrency_per_host=settings.concurrency_per_host,
         )
-        return await download(
-            args.page_url,
-            upstream=upstream,
-            output_dir=settings.output_dir,
-            output=args.output,
-            quality=args.quality,
-            resume=args.resume,
-            reencode=args.reencode,
-            confirm_restart=_confirm_restart if interactive else None,
-            progress=_ProgressLine(stderr) if stderr.isatty() else None,
-        )
+        yield _Session(upstream, args.page_url)
 
 
-async def _capture_and_download(
-    args: argparse.Namespace, settings: Settings, stderr: TextIO, interactive: bool
-) -> Path:
-    """``get <page-url>``: capture the page in a browser, then download (SDD §4)."""
+@contextlib.asynccontextmanager
+async def _capture_session(
+    args: argparse.Namespace, settings: Settings, interactive: bool
+) -> AsyncIterator[_Session]:
+    """``get <page-url>``: capture the page in an isolated browser (SDD §4 steps 1-2)."""
     from playwright.async_api import async_playwright
 
     adapter = adapter_for(urlsplit(args.page_url).hostname, play_selector=settings.play_selector)
@@ -255,22 +261,79 @@ async def _capture_and_download(
                     upstream.add_template(template)
                 return again.url
 
-            return await download(
-                result.url,
-                upstream=upstream,
-                output_dir=settings.output_dir,
-                output=args.output,
-                name=result.title,
-                quality=args.quality,
-                resume=args.resume,
-                reencode=args.reencode,
-                confirm_restart=_confirm_restart if interactive else None,
-                progress=_ProgressLine(stderr) if stderr.isatty() else None,
-                recapture=recapture,
-            )
+            yield _Session(upstream, result.url, result.title, recapture)
         finally:
             with contextlib.suppress(Exception):
                 await browser.close()
+
+
+async def _download(
+    session: _Session,
+    args: argparse.Namespace,
+    settings: Settings,
+    stderr: TextIO,
+    interactive: bool,
+) -> Path:
+    """Download mode (SDD §4 step 4)."""
+    return await download(
+        session.url,
+        upstream=session.upstream,
+        output_dir=settings.output_dir,
+        output=args.output,
+        name=session.title,
+        quality=args.quality,
+        resume=args.resume,
+        reencode=args.reencode,
+        confirm_restart=_confirm_restart if interactive else None,
+        progress=_ProgressLine(stderr) if stderr.isatty() else None,
+        recapture=session.recapture,
+    )
+
+
+async def _play(
+    session: _Session,
+    args: argparse.Namespace,
+    settings: Settings,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> None:
+    """Play mode (SDD §4 step 3): print the loopback URL, serve until idle or Ctrl-C."""
+    proxy = PlaybackProxy(
+        session.upstream,
+        quality=args.quality,
+        allowed_origins=settings.player_origins,
+        idle_timeout_s=settings.play_idle_timeout_s,
+        recapture=session.recapture,
+    )
+    await proxy.start()
+    try:
+        url = await proxy.open(session.url)
+        print(url, file=stdout, flush=True)
+        print(
+            "Open this URL in VLC, IINA or an hls.js page on this computer. "
+            f"The proxy stops after {settings.play_idle_timeout_s:g}s without requests "
+            "or on Ctrl-C.",
+            file=stderr,
+            flush=True,
+        )
+        await proxy.serve_until_idle()
+    finally:
+        await proxy.close()
+
+
+async def _run_get(
+    args: argparse.Namespace,
+    settings: Settings,
+    stdout: TextIO,
+    stderr: TextIO,
+    interactive: bool,
+) -> Path | None:
+    open_session = _playlist_session if args.playlist else _capture_session
+    async with open_session(args, settings, interactive) as session:
+        if args.mode == "play":
+            await _play(session, args, settings, stdout, stderr)
+            return None
+        return await _download(session, args, settings, stderr, interactive)
 
 
 def cmd_get(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
@@ -280,19 +343,21 @@ def cmd_get(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
         host=urlsplit(args.page_url).hostname,
         overrides={"headless": False if args.headed else None},
     )
-    if args.mode == "play":
-        print("hls-harvester get --play: not implemented (playback proxy, M3)", file=stderr)
-        return ExitCode.INTERNAL_ERROR
     if args.storage_state is not None and not args.storage_state.is_file():
         raise UsageError(f"storage state file {args.storage_state} does not exist")
+    if args.mode == "play" and (args.resume or args.reencode or args.output):
+        raise UsageError("--resume, --reencode and --output apply to downloads, not --play")
     interactive = not args.non_interactive and sys.stdin.isatty()
-    run = _download_playlist if args.playlist else _capture_and_download
     try:
-        final = asyncio.run(run(args, settings, stderr, interactive))
+        final = asyncio.run(_run_get(args, settings, stdout, stderr, interactive))
     except KeyboardInterrupt:
+        if args.mode == "play":
+            print("\nstopped", file=stderr)
+            return ExitCode.OK
         print("\ninterrupted; run again with --resume to continue", file=stderr)
         return ExitCode.INTERRUPTED
-    print(final, file=stdout)
+    if final is not None:
+        print(final, file=stdout)
     return ExitCode.OK
 
 

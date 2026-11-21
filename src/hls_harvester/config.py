@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from hls_harvester.errors import UsageError
 
@@ -52,6 +53,10 @@ class Settings:
     """Base delay of the exponential retry backoff."""
     browser_executable: Path | None = None
     """Chromium binary to use instead of the one ``playwright install`` provides."""
+    play_idle_timeout_s: float = 600.0
+    """The playback proxy stops after this long without player requests (SDD §3.6)."""
+    player_origins: tuple[str, ...] = ()
+    """Origins of local player pages (e.g. an hls.js page) allowed to read the proxy."""
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,11 @@ def default_config_path(
     return base / APP_NAME / CONFIG_FILENAME
 
 
+def _is_origin(value: str) -> bool:
+    parts = urlsplit(value.rstrip("/"))
+    return parts.scheme in {"http", "https"} and bool(parts.netloc) and not parts.path
+
+
 def _check_value(key: str, value: Any, where: str) -> Any:
     """Validate a single setting and return it converted to its Settings type."""
     if key not in _FIELDS:
@@ -103,6 +113,14 @@ def _check_value(key: str, value: Any, where: str) -> Any:
         if not isinstance(value, str) or not value:
             raise ConfigError(f"{where}: play_selector must be a non-empty string")
         return value
+    if key == "player_origins":
+        if not isinstance(value, list | tuple) or not all(
+            isinstance(o, str) and _is_origin(o) for o in value
+        ):
+            raise ConfigError(
+                f'{where}: player_origins must be a list of origins like "http://localhost:8080"'
+            )
+        return tuple(o.rstrip("/").lower() for o in value)
     if key in _INT_MINIMUMS:
         minimum = _INT_MINIMUMS[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
