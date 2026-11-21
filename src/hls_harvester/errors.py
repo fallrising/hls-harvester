@@ -28,6 +28,8 @@ class ExitCode(IntEnum):
     """Unsupported content: DRM, unsupported tag or encryption method."""
     VERIFY_FAILED = 7
     """Output verification failed: FFmpeg failed, track/duration mismatch, period mismatch."""
+    INTERRUPTED = 130
+    """Interrupted by Ctrl-C during a download (not in the SDD table; see decisions.md)."""
 
 
 class HarvesterError(Exception):
