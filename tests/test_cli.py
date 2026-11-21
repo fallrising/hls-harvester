@@ -99,17 +99,15 @@ def test_usage_errors_exit_2(argv: list[str]) -> None:
     assert info.value.code == ExitCode.USAGE
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["get", "https://example.com/v"],
-        ["get", "https://example.com/v", "--play"],
-        ["login", "https://example.com", "--storage-state", "s.json"],
-    ],
-)
-def test_unimplemented_commands(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(argv) == ExitCode.INTERNAL_ERROR
+def test_play_is_not_implemented(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["get", "https://example.com/v", "--play"]) == ExitCode.INTERNAL_ERROR
     assert "not implemented" in capsys.readouterr().err
+
+
+def test_missing_storage_state_is_usage_error(tmp_path: Path) -> None:
+    missing = tmp_path / "nope.json"
+    argv = ["get", "https://example.com/v", "--storage-state", str(missing)]
+    assert cli.main(argv) == ExitCode.USAGE
 
 
 def test_get_with_invalid_config_is_usage_error(

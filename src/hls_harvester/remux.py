@@ -136,6 +136,7 @@ def _tool(name: str) -> str:
 
 
 async def _run(argv: Sequence[str], *, cwd: Path | None = None) -> tuple[int, bytes, str]:
+    log.debug("running: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,

@@ -13,9 +13,10 @@ Flow for one ``get`` in download mode:
    process loses at most the resources in flight.
 4. On 401/403 the track's new requests pause and its media playlist is re-requested; the
    new playlist is aligned with the old one by media sequence number and duration, and
-   only unfinished resources use the new URLs. At most 3 refreshes per job. Re-capturing
-   the page (when re-requesting fails) needs the capture layer and arrives in M2; until
-   then the download stops with exit code 5.
+   only unfinished resources use the new URLs. If re-requesting fails too, the page is
+   captured again in the same browser session (``recapture``) and every track is realigned
+   to the new URLs; without a page (``--playlist``) the download stops with exit code 5.
+   At most 3 refreshes per job.
 5. ``--resume`` re-requests the playlist (fresh credentials), aligns it with ``job.json``
    and downloads only resources that are unfinished or whose file size does not match.
 6. Remux and verify (:mod:`hls_harvester.remux`) into a hidden temporary file in the
@@ -32,7 +33,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, Literal
@@ -64,6 +65,8 @@ _SEGMENT_SUFFIXES: Final = frozenset(
 
 RestartChoice = Literal["resume", "restart", "abort"]
 ConfirmRestart = Callable[[Path], RestartChoice]
+Recapture = Callable[[], Awaitable[str]]
+"""Captures the page again and returns the new top-level playlist URL."""
 Progress = Callable[[int, int], None]
 
 
@@ -394,10 +397,17 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 class Fetcher:
-    def __init__(self, upstream: Upstream, job: Job, progress: Progress | None = None) -> None:
+    def __init__(
+        self,
+        upstream: Upstream,
+        job: Job,
+        progress: Progress | None = None,
+        recapture: Recapture | None = None,
+    ) -> None:
         self.upstream = upstream
         self.job = job
         self.progress = progress
+        self.recapture = recapture
         self.refreshes = 0
         self.total = sum(len(t.resources()) for t in job.tracks)
         self.completed = sum(r.done for t in job.tracks for r in t.resources())
@@ -455,18 +465,40 @@ class Fetcher:
                         self.upstream, track.source.url, track.source.referrer
                     )
                 except CredentialsExpired as exc:
-                    raise UpstreamError(
-                        f"credentials expired and re-requesting the playlist failed ({exc}); "
-                        "re-capturing the page is not available in this version"
-                    ) from None
-                fresh = SourceTrack(track.name, track.source.url, track.source.referrer, playlist)
-                align(track, build_track(fresh))
-                track.generation += 1
+                    await self._recapture(exc)
+                else:
+                    fresh = SourceTrack(
+                        track.name, track.source.url, track.source.referrer, playlist
+                    )
+                    align(track, build_track(fresh))
+                    track.generation += 1
                 log.info(
                     "refreshed the %s playlist (%d/%d)", track.name, self.refreshes, MAX_REFRESHES
                 )
             finally:
                 track.ready.set()
+
+    async def _recapture(self, cause: CredentialsExpired) -> None:
+        """Capture the page again in the same browser session and realign every track."""
+        if self.recapture is None:
+            raise UpstreamError(
+                f"credentials expired and re-requesting the playlist failed ({cause}); "
+                "pass the page URL instead of --playlist so the page can be captured again"
+            )
+        log.info("re-capturing the page for fresh credentials")
+        try:
+            url = await self.recapture()
+            source = await resolve_source(self.upstream, url, self.job.source.quality)
+        except HarvesterError as exc:
+            raise UpstreamError(
+                f"credentials expired and capturing the page again failed: {exc}"
+            ) from None
+        fresh = {t.name: t for t in source.tracks}
+        for track in self.job.tracks:
+            if track.name not in fresh:
+                raise UpstreamError(f"the page no longer offers the {track.name} rendition")
+            align(track, build_track(fresh[track.name]))
+            track.generation += 1
 
 
 def _first_error(group: BaseExceptionGroup[BaseException]) -> BaseException:
@@ -538,6 +570,7 @@ async def download(
     reencode: bool = False,
     confirm_restart: ConfirmRestart | None = None,
     progress: Progress | None = None,
+    recapture: Recapture | None = None,
 ) -> Path:
     """Download ``url`` (a master or media playlist URL) and return the verified file."""
     source = await resolve_source(upstream, url, quality)
@@ -573,7 +606,7 @@ async def download(
         )
     job.save()
 
-    await Fetcher(upstream, job, progress).run()
+    await Fetcher(upstream, job, progress, recapture).run()
 
     tmp = temp_output_for(final)
     tmp.unlink(missing_ok=True)
