@@ -1,17 +1,22 @@
 """Local fixture server with fault injection and request recording (SDD §7, §8 M0).
 
-One :class:`FixtureServer` runs two aiohttp sites on random ``127.0.0.1`` ports that
-stand for two different hosts:
+One :class:`FixtureServer` runs two aiohttp sites on random loopback ports that stand for
+two different hosts:
 
 ``origin``
-    The page/site host. Also answers ``Host: origin.test:<port>``.
+    The page/site host, ``http://127.0.0.1:<port>``. Also answers ``Host: origin.test``.
 ``cdn``
-    The media CDN. Also answers ``Host: cdn.test:<port>``.
+    The media CDN, ``http://localhost:<port>``. Also answers ``Host: cdn.test``.
+
+``127.0.0.1`` and ``localhost`` are different hosts for cookies (RFC 6265 ignores ports),
+and both Chromium and Playwright's Node-side request client resolve them without any
+resolver tricks. The CDN listens on ``127.0.0.1`` and, when available, ``::1``.
 
 The host a request is attributed to is taken from the ``Host`` header when it names one
-of the virtual hostnames above, otherwise from the port it arrived on. (Cookies ignore
-ports, so tests that need per-host cookie isolation must use the virtual hostnames and
-point a resolver at ``127.0.0.1``.)
+of the virtual hostnames above, otherwise from the port it arrived on.
+
+Responses carry permissive CORS headers (the request's ``Origin`` with credentials) and
+``OPTIONS`` preflights are answered, so test pages on the origin can read CDN responses.
 
 Both hosts serve the generated samples (:mod:`tests.fixtures.media`) under ``/media/``.
 Tests may register extra fixed responses with :meth:`FixtureServer.add_route`.
@@ -40,6 +45,7 @@ Every request is recorded with its headers in :attr:`FixtureServer.requests`, an
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import random
 import time
@@ -212,14 +218,21 @@ class RecordedRequest:
 # --- server ----------------------------------------------------------------------------
 
 
+HOSTNAMES = {ORIGIN: "127.0.0.1", CDN: "localhost"}
+
+
 @dataclass(frozen=True)
 class HostInfo:
     name: str
     port: int
 
     @property
+    def hostname(self) -> str:
+        return HOSTNAMES[self.name]
+
+    @property
     def base_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+        return f"http://{self.hostname}:{self.port}"
 
     @property
     def virtual_hostname(self) -> str:
@@ -228,6 +241,14 @@ class HostInfo:
     @property
     def virtual_base_url(self) -> str:
         return f"http://{self.virtual_hostname}:{self.port}"
+
+
+async def _add_cors_headers(request: web.Request, response: web.StreamResponse) -> None:
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
 
 
 class FixtureServer:
@@ -251,6 +272,7 @@ class FixtureServer:
             app = web.Application()
             app[HOST_NAME_KEY] = name
             app.router.add_route("*", "/{tail:.*}", self._handle)
+            app.on_response_prepare.append(_add_cors_headers)
             # Cancel handlers whose client disconnected (e.g. timed out during a Delay), so
             # in-flight accounting reflects open connections only.
             runner = web.AppRunner(
@@ -260,6 +282,10 @@ class FixtureServer:
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
             port = int(runner.addresses[-1][1])
+            if name == CDN:
+                # "localhost" may resolve to ::1 first; listen there too when possible.
+                with contextlib.suppress(OSError):
+                    await web.TCPSite(runner, "::1", port).start()
             self.hosts[name] = HostInfo(name, port)
             self._runners.append(runner)
 
@@ -369,6 +395,17 @@ class FixtureServer:
     async def _respond(
         self, request: web.Request, host: str, record: RecordedRequest
     ) -> web.StreamResponse:
+        if request.method == "OPTIONS" and "Access-Control-Request-Method" in request.headers:
+            return web.Response(
+                status=204,
+                headers={
+                    "Access-Control-Allow-Methods": "GET, HEAD",
+                    "Access-Control-Allow-Headers": request.headers.get(
+                        "Access-Control-Request-Headers", "*"
+                    ),
+                    "Access-Control-Max-Age": "600",
+                },
+            )
         for rule in self.rules:
             if not rule.matches(host, request.method, request.path, request.query_string):
                 continue

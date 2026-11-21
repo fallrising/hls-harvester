@@ -8,56 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import sys
 from pathlib import Path
 
 import pytest
 
 from hls_harvester.downloader import work_dir_for
 from hls_harvester.errors import ExitCode
+from tests.fixtures.cli import cli_env, run_cli, start_cli
 from tests.fixtures.media import HlsSamples
 from tests.fixtures.server import FixtureServer, delay
 
 SECRET = "SECRET-TOKEN-42"
-
-
-def cli_env(home: Path, config: str = "") -> dict[str, str]:
-    """Environment with an isolated config file (XDG on Linux, ~/Library on macOS)."""
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    env["XDG_CONFIG_HOME"] = str(home / ".config")
-    for base in (home / ".config", home / "Library" / "Application Support"):
-        (base / "hls-harvester").mkdir(parents=True, exist_ok=True)
-        (base / "hls-harvester" / "config.toml").write_text(config)
-    return env
-
-
-async def start_cli(env: dict[str, str], *args: str) -> asyncio.subprocess.Process:
-    return await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "hls_harvester",
-        *args,
-        env=env,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-
-async def run_cli(env: dict[str, str], *args: str) -> tuple[int, str, str]:
-    proc = await start_cli(env, *args)
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=180)
-    assert proc.returncode is not None
-    return proc.returncode, out.decode(), err.decode()
-
-
-@pytest.fixture
-def home(tmp_path: Path) -> Path:
-    path = tmp_path / "home"
-    path.mkdir()
-    return path
 
 
 async def test_cli_download_prints_path(
@@ -100,12 +61,6 @@ async def test_cli_exit_codes(
     actual, _, err = await run_cli(env, "get", url, "--playlist", "--non-interactive", *extra)
     assert actual == code, err
     assert message in err
-
-
-async def test_cli_get_without_playlist_flag_is_not_implemented(home: Path) -> None:
-    code, _, err = await run_cli(cli_env(home), "get", "https://example.com/watch")
-    assert code == ExitCode.INTERNAL_ERROR
-    assert "not implemented" in err
 
 
 # --- 續傳 (resume) ---------------------------------------------------------------------
