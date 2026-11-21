@@ -1,2 +1,19 @@
 # hls-harvester
-Modular system for capturing HLS/m3u8 streams from video pages via backend browser automation, caching, and local clean playback/download. General-purpose for dynamic tokenized streams.
+
+通用化 HLS / m3u8 串流擷取與本地乾淨播放/下載系統。
+
+把「手動打開瀏覽器、F12 抓 m3u8、跟著廣告跳轉」變成「丟入頁面 URL → 後台擷取幹淨串流 → 本地播放或下載完整影片」。
+
+專為具備以下特徵的影片站設計：
+- 影片為 HLS / m3u8（動態 token，每次地址都會變）
+- 頁面充滿廣告腳本與反廣告欄截
+- 真正串流只在播放器載入後才出現在網路請求中
+
+詳細系統設計請見 [docs/SDD.md](docs/SDD.md)。
+
+## 快速目標
+- 後台 Playwright 擷取（完全不干擾你的主瀏覽器）
+- 快取 m3u8 URL + 必要 headers
+- 提取頁面影片標題作為檔名
+- 本地乾淨播放或完整下載（ffmpeg / HLS Proxy）
+- 通用處理流程，支援站點差異適配
