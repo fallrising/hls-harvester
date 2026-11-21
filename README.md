@@ -1,6 +1,6 @@
 # hls-harvester
 
-> **狀態：M0 完成。** 已有專案骨架、CI（Linux／macOS）與可注入故障的本機測試伺服器；`doctor` 可用，擷取、下載與播放尚未實作（M1 起）。里程碑與「可正式使用」的條件見 [docs/SDD.md §8](docs/SDD.md#8-里程碑)，實作取捨見 [docs/decisions.md](docs/decisions.md)。
+> **狀態：M1 完成。** 可直接以清單 URL 下載（`get --playlist`）：分段並行下載、暫時性錯誤重試、續傳、不連續區段與 DRM 偵測，輸出經 ffprobe 驗證。頁面擷取（M2）與播放代理（M3）尚未實作。里程碑與「可正式使用」的條件見 [docs/SDD.md §8](docs/SDD.md#8-里程碑)，實作取捨見 [docs/decisions.md](docs/decisions.md)。
 
 通用化 HLS / m3u8 串流擷取與本地乾淨播放／下載工具，供你有權存取與保存的影音使用。
 
@@ -23,6 +23,16 @@
 - 本地 HLS 代理供 VLC、IINA 或 hls.js 乾淨播放
 - 通用處理流程，以站點適配器處理差異
 
+## 目前用法（M1）
+
+```sh
+# 直接給 HLS 清單 URL（master 或 media playlist），不經瀏覽器擷取
+hls-harvester get --playlist "https://example.com/path/master.m3u8" --quality 720p --output clip.mp4
+hls-harvester get --playlist "<同一 URL>" --output clip.mp4 --resume   # 中斷後續傳
+```
+
+結束碼見 [SDD §3.8](docs/SDD.md#38-設定日誌與結束碼)。
+
 ## Development
 
 需要 Python 3.11 以上與 FFmpeg/ffprobe 6.0 以上（測試會用 FFmpeg 即時產生合成 HLS 樣本）。
@@ -30,7 +40,7 @@
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 make install            # pip install -e ".[dev]"
-playwright install chromium   # 選用；M2 起的擷取才需要
+playwright install chromium   # 選用；M2 起的頁面擷取才需要（下載不需瀏覽器）
 hls-harvester doctor    # 檢查環境
 ```
 

@@ -51,3 +51,54 @@ implementation took. Newest last. Each entry names the SDD section it interprets
     only; nothing decrypts or handles DRM.
 14. **Runtime dependencies** are `playwright` and `aiohttp` (§5). The HLS parser is chosen in
     M1.
+
+## M1
+
+15. **Upstream transport in direct mode** (§3.3). With no capture there is no
+    `BrowserContext`, so `get --playlist` uses a standalone Playwright `APIRequestContext`
+    (same API and RFC 6265 cookie jar, no browser binary needed). M2 swaps in
+    `BrowserContext.request`. Playwright has one timeout per request, so the §3.5 10 s
+    connect / 30 s read pair is a single `request_timeout_s = 30` per attempt.
+16. **Own HLS parser instead of the `m3u8` package** (§3.4, §5 "或同等 HLS parser"). Rejecting
+    unsupported URI tags needs to see every tag, which `m3u8` silently drops, and a typed
+    parser keeps `mypy --strict` meaningful.
+17. **`get --playlist`** (§8 M1 "直接給清單 URL"). Marks `PAGE_URL` as a playlist URL and skips
+    capture. Without a page there is no title, so the file name comes from the URL path
+    (generic names such as `index`/`master` fall back to the parent directory, then `video`).
+18. **Exit code for non-HLS responses** (§3.8). A response that is not a valid playlist
+    (no `#EXTM3U`, broken tags) is an upstream error, exit 5.
+19. **Unsupported tags** (§3.4). Besides DRM keys (`SAMPLE-AES*`, non-identity `KEYFORMAT`,
+    in `EXT-X-KEY` and `EXT-X-SESSION-KEY`), `EXT-X-DEFINE`, `EXT-X-SKIP`, `EXT-X-GAP`,
+    `EXT-X-I-FRAMES-ONLY` and unknown tags with a `URI=` attribute exit 6. Low-latency parts,
+    I-frame/image streams, session data and content steering are ignored: a finished
+    playlist lists full segments, so nothing is missing.
+20. **Quality labels** (§3.1). `<height>p`, or `<height>p@<kbps>k` when heights repeat, or
+    `<kbps>k` without `RESOLUTION`; `720` also matches `720p`. No `--quality` picks the
+    highest bandwidth. A media playlist has one quality, so `--quality` is ignored there with
+    a warning.
+21. **Audio rendition** (§3.4). The variant's `AUDIO` group's `DEFAULT=YES` rendition with a
+    URI, else its first with a URI; a group without URIs means audio is muxed. Subtitle
+    renditions are not downloaded yet (warning only); WebVTT needs a conversion step.
+22. **Credential refresh without capture** (§3.5 item 4). Re-requesting the media playlist is
+    implemented; when that also gets 401/403 the job stops with exit 5, because re-capture
+    needs the M2 capture layer. The 3-refresh limit counts every refresh in the job.
+23. **Resume edge cases** (§3.5 item 5). `--resume` without a `job.json` warns and starts
+    fresh. A work directory from another source (redacted URL differs) or quality exits 2;
+    a playlist that no longer aligns (segment count, sequence or duration) exits 5. An
+    existing work directory without `--resume` prompts `[r]esume/[s]tart over/[a]bort` only
+    on a TTY without `--non-interactive`; otherwise it exits 2.
+24. **Output files** (§3.2 item 7, §3.5). An existing file is never overwritten: derived
+    names get ` (n)`, an explicit existing `--output` exits 2. Containers: `.mp4` (default),
+    `.m4v`, `.mov`, `.mkv`. The hidden temporary output is created 0600 and gets the normal
+    umask mode only after verification, just before the rename.
+25. **`--reencode`** (§3.5 "第一個主要區段"). Read as the longest period (earliest on ties).
+    Every period is re-encoded, not just the differing ones, so the concat step can still
+    use `-c copy` with identical codec parameters. Only H.264/AAC references are supported;
+    others exit 7.
+26. **Ctrl-C exits 130** (`ExitCode.INTERRUPTED`). §3.8 has no code for it; 130 is the shell
+    convention and the work directory is kept for `--resume`.
+27. **New modules** (§6): `remux.py` (FFmpeg, periods, verification) and `filenames.py` keep
+    `downloader.py` to fetching and job state.
+28. **Headers for hosts without a template** (§3.3). `User-Agent` is the honest
+    `hls-harvester/<version>` (no browser impersonation); `Referer` follows the browser
+    default `strict-origin-when-cross-origin` from the referring playlist.
